@@ -1,0 +1,18 @@
+MySQL / buffer pool bytes / SQL mode: ('8.0.45', 134217728, 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION')
+Dataset: 120,000 requests, 24,000 pending, 8,000 accounts
+Pending by type: [('INFO_CHANGE', 12000), ('RETAKE', 12000)]
+[before / all pending requests] warmed 5 + measured 30; median=32.283 ms, p95=50.034 ms, min=28.610 ms, max=55.515 ms
+-> Limit: 50 row(s)  (cost=5461 rows=50) (actual time=28.6..28.6 rows=50 loops=1)
+    -> Sort: request.requested_at, request.request_id, limit input to 50 row(s) per chunk  (cost=5461 rows=50522) (actual time=28.5..28.6 rows=50 loops=1)
+        -> Index lookup on request using ix_request_queue (state='PENDING'), with index condition: (request.state = 'PENDING')  (cost=5461 rows=50522) (actual time=0.108..26.5 rows=24000 loops=1)
+[before / retake-only pending requests] warmed 5 + measured 30; median=0.943 ms, p95=1.149 ms, min=0.891 ms, max=1.417 ms
+-> Limit: 50 row(s)  (cost=2527 rows=50) (actual time=0.0891..0.0958 rows=50 loops=1)
+    -> Index lookup on request using ix_request_queue (state='PENDING', request_type='RETAKE'), with index condition: ((request.request_type = 'RETAKE') and (request.state = 'PENDING'))  (cost=2527 rows=21184) (actual time=0.0886..0.0927 rows=50 loops=1)
+[after / all pending requests] warmed 5 + measured 30; median=0.949 ms, p95=1.323 ms, min=0.881 ms, max=1.490 ms
+-> Limit: 50 row(s)  (cost=5295 rows=50) (actual time=0.0834..0.0898 rows=50 loops=1)
+    -> Index lookup on request using ix_request_queue_time (state='PENDING'), with index condition: (request.state = 'PENDING')  (cost=5295 rows=48864) (actual time=0.0829..0.0876 rows=50 loops=1)
+[after / retake-only pending requests] warmed 5 + measured 30; median=0.934 ms, p95=1.390 ms, min=0.869 ms, max=1.400 ms
+-> Limit: 50 row(s)  (cost=2527 rows=50) (actual time=0.0795..0.0856 rows=50 loops=1)
+    -> Index lookup on request using ix_request_queue (state='PENDING', request_type='RETAKE'), with index condition: ((request.request_type = 'RETAKE') and (request.state = 'PENDING'))  (cost=2527 rows=21184) (actual time=0.079..0.0829 rows=50 loops=1)
+Both 50-row pages have identical contents and ordering before/after.
+All-pending median speed-up: 34.02x
