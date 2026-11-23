@@ -1,11 +1,11 @@
-"""Database transactions exercised by the admission, scheduling and enrollment cases."""
+"""Admission, course planning, scheduling and enrollment transactions."""
 
 from hashlib import sha256
 import json
 
 from mysql.connector import IntegrityError
 
-from database import Rejected, log, one, permission, require, rows, transaction, value
+from .database import Rejected, log, one, permission, require, rows, transaction, value
 
 
 def import_students(cn, account, batch_no, students):
@@ -110,10 +110,10 @@ def apply_phone_change(cn, account, request_id):
         return True
 
 
-def approve(cur, account, request_id):
+def approve(cur, account, request_id, opinion=None):
     cur.execute("UPDATE request SET state='APPROVED' WHERE request_id=%s", (request_id,))
-    cur.execute("""INSERT INTO approval_log (request_id,actor_id,action_type)
-                   VALUES (%s,%s,'APPROVE')""", (request_id, account))
+    cur.execute("""INSERT INTO approval_log (request_id,actor_id,action_type,opinion)
+                   VALUES (%s,%s,'APPROVE',%s)""", (request_id, account, opinion))
 
 
 def add_term(cn, account, term_code, starts_on, week_count, *, is_current=False):
@@ -262,7 +262,7 @@ def schedule_section(cn, account, section_id, room, day, periods, weeks):
         return schedule_id
 
 
-def open_round(cn, account, term, name, mode, starts, ends, sections, credit_limit=None, classes=()):
+def open_round(cn, account, term, name, mode, starts, ends, sections, credit_limit=None, classes=(), *, seed=None):
     require(sections and len(set(sections)) == len(sections), "INVALID_ROUND_SECTIONS")
     require(mode in {"DIRECT", "LOTTERY"} and ends > starts, "INVALID_ROUND")
     with transaction(cn) as cur:
@@ -279,9 +279,9 @@ def open_round(cn, account, term, name, mode, starts, ends, sections, credit_lim
             require(section and section["term_code"] == term, "ROUND_WRONG_TERM")
             require(section["state"] in {"SCHEDULED", "OPEN"}, "SECTION_NOT_SCHEDULED")
         cur.execute("""INSERT INTO selection_round
-                       (term_code,round_name,mode,starts_at,ends_at,credit_limit,state)
-                       VALUES (%s,%s,%s,%s,%s,%s,'OPEN')""",
-                    (term, name, mode, starts, ends, credit_limit))
+                       (term_code,round_name,mode,starts_at,ends_at,credit_limit,state,lottery_seed)
+                       VALUES (%s,%s,%s,%s,%s,%s,'OPEN',%s)""",
+                    (term, name, mode, starts, ends, credit_limit, seed))
         round_id = cur.lastrowid
         cur.executemany("INSERT INTO round_section VALUES (%s,%s)",
                         [(round_id, section) for section in sorted(sections)])
@@ -445,9 +445,8 @@ def adjust_selection(cn, account, round_id, student_no, section_id, now, *, drop
                                 previous, state, "ADJUST", now, reason)
 
 
-def close_lottery(cn, account, round_id, now, seed):
-    """Use one transaction for the small fixture; ordering and writes are reproducible."""
-    require(len(seed) == 32, "INVALID_SEED")
+def close_lottery(cn, account, round_id, now, seed=None):
+    """Settle a round in one transaction using the stored draw order."""
     with transaction(cn) as cur:
         permission(cur, account, "ROUND")
         selection_round = round_lock(cur, round_id, exclusive=True)
@@ -456,6 +455,8 @@ def close_lottery(cn, account, round_id, now, seed):
             return []
         require(selection_round["state"] == "OPEN" and now >= selection_round["ends_at"],
                 "LOTTERY_STILL_OPEN")
+        seed = selection_round["lottery_seed"] or seed
+        require(seed is not None and len(seed) == 32, "INVALID_SEED")
         cur.execute("""UPDATE selection_round SET state='SETTLING',lottery_seed=%s
                        WHERE round_id=%s""", (seed, round_id))
         pending = rows(

@@ -1,7 +1,7 @@
-"""Exam scheduling and deferral transactions exercised by the integration suite."""
+"""Exam scheduling and deferral transactions."""
 
-from academic import approve
-from database import log, one, permission, require, rows, transaction, value
+from .academic import approve
+from .database import log, one, permission, require, rows, transaction, value
 
 
 def exam_students(cur, section_id, kind, scheduled_term, starts_at):
@@ -31,7 +31,7 @@ def exam_students(cur, section_id, kind, scheduled_term, starts_at):
 
 
 def publish_exam(cn, account, section_id, term, period, kind, starts, ends, rooms,
-                 *, invigilators=None, attempt=1):
+                 *, invigilators=None, attempt=1, method="笔试"):
     require(starts < ends and kind in {"REGULAR", "MAKEUP", "DEFERRED"}, "INVALID_EXAM")
     require(rooms and len(rooms) == len(set(rooms)), "INVALID_EXAM_ROOMS")
     invigilators = invigilators or {}
@@ -96,8 +96,8 @@ def publish_exam(cn, account, section_id, term, period, kind, starts, ends, room
         cur.execute(
             """INSERT INTO exam (section_id,scheduled_term_code,exam_period,attempt_kind,attempt_no,
                                  starts_at,ends_at,exam_method)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,'笔试')""",
-            (section_id, term, period, kind, attempt, starts, ends),
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (section_id, term, period, kind, attempt, starts, ends, method),
         )
         exam_id = cur.lastrowid
         cur.executemany("INSERT INTO exam_room VALUES (%s,%s,%s)",
@@ -123,9 +123,11 @@ def student_exams(cn, account, term):
         student_no = permission(cur, account, "EXAM_READ")["student_no"]
         return rows(
             cur,
-            """SELECT e.exam_id,s.exam_seat_id,s.candidate_state,s.room_code,s.seat_no,s.ticket_no
+            """SELECT e.exam_id,s.exam_seat_id,s.candidate_state,s.room_code,s.seat_no,s.ticket_no,
+                      c.course_name,e.exam_period,e.attempt_kind,e.starts_at,e.ends_at,e.exam_method
                FROM exam e JOIN exam_seat s ON s.exam_id=e.exam_id
                JOIN enrollment n ON n.enrollment_id=s.enrollment_id
+               JOIN section x ON x.section_id=e.section_id JOIN course c ON c.course_code=x.course_code
                WHERE e.state='PUBLISHED' AND e.scheduled_term_code=%s AND n.student_no=%s
                ORDER BY e.starts_at,e.exam_id""",
             (term, student_no),
@@ -147,7 +149,7 @@ def teacher_invigilation(cn, account, term):
         )
 
 
-def request_deferral(cn, account, seat_id, evidence_ref, now):
+def request_deferral(cn, account, seat_id, evidence_ref, now, reason="缓考申请"):
     with transaction(cn) as cur:
         student_no = permission(cur, account, "DEFERRAL")["student_no"]
         seat = one(
@@ -172,7 +174,7 @@ def request_deferral(cn, account, seat_id, evidence_ref, now):
             return pending
         cur.execute(
             """INSERT INTO request (applicant_id,request_type,reason,requested_at)
-               VALUES (%s,'DEFERRAL','测试缓考说明',%s)""", (account, now),
+               VALUES (%s,'DEFERRAL',%s,%s)""", (account, reason, now),
         )
         request_id = cur.lastrowid
         cur.execute("INSERT INTO deferral_req VALUES (%s,%s,%s)",
@@ -180,7 +182,7 @@ def request_deferral(cn, account, seat_id, evidence_ref, now):
         return request_id
 
 
-def approve_deferral(cn, account, request_id, now):
+def approve_deferral(cn, account, request_id, now, opinion=None):
     with transaction(cn) as cur:
         permission(cur, account, "DEFERRAL_REVIEW")
         change = one(cur, """SELECT r.state,d.exam_seat_id FROM request r JOIN deferral_req d
@@ -197,5 +199,5 @@ def approve_deferral(cn, account, request_id, now):
                 and now < seat["starts_at"], "DEFERRAL_CLOSED")
         cur.execute("UPDATE exam_seat SET candidate_state='DEFERRED' WHERE exam_seat_id=%s",
                     (change["exam_seat_id"],))
-        approve(cur, account, request_id)
+        approve(cur, account, request_id, opinion)
         return True

@@ -3,8 +3,8 @@
 import json
 from decimal import Decimal, ROUND_HALF_UP
 
-from academic import approve
-from database import log, one, permission, require, rows, transaction, value
+from .academic import approve
+from .database import log, one, permission, require, rows, transaction, value
 
 
 SPECIAL_FLAGS = {"ABSENT", "DEFERRED", "VIOLATION", "CHEATING", "INELIGIBLE"}
@@ -250,7 +250,7 @@ def request_correction(cn, account, grade_id, scores, reason):
         require(sheet["state"] == "PUBLISHED", "GRADE_NOT_PUBLISHED")
         grade = one(cur, "SELECT * FROM grade WHERE grade_id=%s FOR UPDATE", (grade_id,))
         require(grade["grade_flag"] == "NORMAL" and sheet["value_kind"] == "NUMERIC",
-                "CORRECTION_FIXTURE_NUMERIC_ONLY")
+                "CORRECTION_NUMERIC_ONLY")
         snapshot = grade_snapshot(cur, grade)
         total, rule = calculate(cur, sheet, components(cur, sheet_id), scores, None, "NORMAL")
         proposed = {"version": grade["version_no"] + 1, "flag": "NORMAL", "total": str(total),
@@ -270,7 +270,7 @@ def request_correction(cn, account, grade_id, scores, reason):
         return request_id
 
 
-def approve_correction(cn, account, request_id):
+def approve_correction(cn, account, request_id, opinion=None):
     with transaction(cn) as cur:
         permission(cur, account, "CORRECTION_REVIEW")
         req = one(
@@ -294,7 +294,7 @@ def approve_correction(cn, account, request_id):
         write_grade(cur, sheet, components(cur, sheet["sheet_id"]), grade["enrollment_id"],
                     scores, None, "NORMAL", version=new_version)
         after = one(cur, "SELECT * FROM grade WHERE grade_id=%s", (grade["grade_id"],))
-        approve(cur, account, request_id)
+        approve(cur, account, request_id, opinion)
         cur.execute(
             """INSERT INTO grade_log
                (grade_id,correction_request_id,actor_id,old_version,new_version,old_snapshot,new_snapshot)
@@ -305,7 +305,7 @@ def approve_correction(cn, account, request_id):
         return True
 
 
-def published_grades(cn, account, *, best=False):
+def published_grades(cn, account, *, best=False, term=None):
     order = """v.passed DESC,v.comparison_score DESC,v.gpa_snapshot DESC,
                sh.published_at DESC,v.grade_id DESC"""
     with cn.cursor(dictionary=True, buffered=True) as cur:
@@ -316,9 +316,10 @@ def published_grades(cn, account, *, best=False):
                 SELECT v.*,ROW_NUMBER() OVER (PARTITION BY v.course_code ORDER BY {order}) AS rank_no
                 FROM v_student_grade v JOIN grade g ON g.grade_id=v.grade_id
                 JOIN grade_sheet sh ON sh.sheet_id=g.sheet_id WHERE v.student_no=%s
+                  AND (%s IS NULL OR v.course_term=%s)
                )
                SELECT * FROM ranked WHERE NOT %s OR rank_no=1 ORDER BY course_code,rank_no""",
-            (student_no, best),
+            (student_no, term, term, best),
         )
 
 

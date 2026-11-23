@@ -1,19 +1,21 @@
 """Evaluation batches, writes, frozen aggregates and teacher-scope queries."""
 
 from decimal import Decimal, ROUND_HALF_UP
+from secrets import token_hex
 
-from database import log, one, permission, require, rows, transaction, value
+from .database import log, one, permission, require, rows, transaction, value
 
 
-def open_evaluation(cn, account, term, starts, ends, indicators):
-    require(indicators and sum(weight for _, weight, _ in indicators) == 100, "EVAL_WEIGHTS")
+def open_evaluation(cn, account, term, starts, ends, indicators, *, name="期末评价", category="课堂"):
+    require(indicators and sum(weight for _, weight, _ in indicators) == 100
+            and all(weight > 0 for _, weight, _ in indicators), "EVAL_WEIGHTS")
     require(starts < ends, "INVALID_EVAL_WINDOW")
     with transaction(cn) as cur:
         permission(cur, account, "EVAL_ADMIN")
         require(one(cur, "SELECT term_code FROM term WHERE term_code=%s FOR UPDATE", (term,)),
                 "NO_TERM")
         cur.execute("""INSERT INTO eval_scheme (scheme_code,version_no,scheme_name)
-                       VALUES ('FIXTURE',1,'课堂评价')""")
+                       VALUES (%s,1,%s)""", (token_hex(8), name))
         scheme = cur.lastrowid
         cur.executemany(
             """INSERT INTO eval_indicator (scheme_id,indicator_text,weight_percent,max_score,order_no)
@@ -23,8 +25,8 @@ def open_evaluation(cn, account, term, starts, ends, indicators):
         )
         cur.execute("""INSERT INTO eval_batch
                        (term_code,scheme_id,batch_name,category,opens_at,closes_at,state)
-                       VALUES (%s,%s,'期末评价','课堂',%s,%s,'OPEN')""",
-                    (term, scheme, starts, ends))
+                       VALUES (%s,%s,%s,%s,%s,%s,'OPEN')""",
+                    (term, scheme, name, category, starts, ends))
         batch_id = cur.lastrowid
         cur.execute(
             """INSERT INTO eval_target (batch_id,section_id,teacher_no)

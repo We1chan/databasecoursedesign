@@ -9,21 +9,21 @@ import unittest
 
 from mysql.connector import Error
 
-from accounts import add_student_account, authenticate, change_password, lock_account, set_role
-from academic import (
+from backend.accounts import add_student_account, authenticate, change_password, lock_account, set_role
+from backend.academic import (
     add_course, add_term, adjust_selection, apply_phone_change, change_selection, close_lottery,
     create_offering, import_students, open_round, replace_plan_courses, request_phone_change,
     schedule_section, student_profile, student_selections, student_timetable, teacher_roster,
 )
 from database import Rejected, connect, rows, sandbox, value
-from evaluations import finish_evaluation, open_evaluation, submit_evaluation, teacher_results
-from exams import approve_deferral, publish_exam, request_deferral, student_exams, teacher_invigilation
+from backend.evaluations import finish_evaluation, open_evaluation, submit_evaluation, teacher_results
+from backend.exams import approve_deferral, publish_exam, request_deferral, student_exams, teacher_invigilation
 from fixtures import (
     ADMIN, ADMITTED_ON, AFTER_EVAL, AFTER_LOTTERY, ALICE, BOB, CHEN, DIRECT_TIME,
     EVAL_TIME, GRADE_TIME, LOTTERY_TIME, NEXT_TERM, OTHER_TEACHER, TEACHER, TERM,
     admission_rows, seed_reference, seed_sections, student_accounts, student_no,
 )
-from grades import (
+from backend.grades import (
     approve_correction, configure_grades, open_grade_sheet, program_credits, published_grades,
     request_correction, review_sheet, save_grades, submit_grades,
 )
