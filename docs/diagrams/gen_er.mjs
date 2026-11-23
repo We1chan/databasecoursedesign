@@ -14,7 +14,7 @@ const FONT = "'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif";
 // 实体中心坐标
 const ENTITIES = {
   学院: [110, 70], 专业: [110, 220], 培养方案: [380, 220], 课程: [640, 220], 学年学期: [900, 220],
-  教师: [330, 430], 排课: [640, 430], 教室: [950, 430],
+  教师: [308, 430], 授课关系: [451, 430], 排课: [640, 430], 教室: [950, 430],
   考试: [950, 640],
   行政班: [110, 790], 学生: [640, 790],
 };
@@ -25,7 +25,8 @@ const CORE = '排课';
 // 选项：name / mult 为联系名、多重性放在连线的哪一侧（+1 / -1，以 A→B 方向的左法线为 +1），
 //      multA / multB 单独覆盖某一端多重性的位置；
 //      pa / pb 为连线在 A、B 边框上的接点（相对实体中心），不给则沿连线自动求边框交点。
-//      排课周围连线多，逐条指定接点，避免多重性标注挤在角上。
+//      via 为可选折点，nameSegment 指定联系名所在的线段（从 0 开始）。
+//      multInset 可缩短标注距端点的距离，便于在短连线上分开两端标注。
 const RELATIONS = [
   ['下设', '学院', '专业', '1', '0..*', { name: 1, mult: -1 }],
   ['包含', '专业', '行政班', '1', '0..*', { name: 1, mult: 1 }],
@@ -34,11 +35,13 @@ const RELATIONS = [
   ['规定', '培养方案', '课程', '0..*', '1..*', { name: -1, mult: 1 }],
   ['开设', '课程', '排课', '1', '0..*', { name: -1, mult: 1, pa: [-25, 21], pb: [-25, -28] }],
   ['属于', '学年学期', '排课', '1', '0..*', { name: 1, mult: 1, multA: -1, pb: [45, -28] }],
-  ['授课', '教师', '排课', '1', '0..*', { name: -1, mult: -1 }],
+  ['担任', '教师', '授课关系', '1', '0..*', { name: -1, mult: 1, multInset: 12 }],
+  ['分配', '授课关系', '排课', '0..*', '1', { name: -1, mult: 1 }],
   ['占用', '排课', '教室', '0..*', '1..*', { name: -1, mult: -1 }],
-  ['面向', '排课', '行政班', '0..*', '0..*', { name: 1, mult: -1, pa: [-60, 28], pb: [40, -21] }],
-  ['选课', '学生', '排课', '0..*', '0..*', { name: -1, mult: 1, pa: [-25, -21], pb: [-25, 28] }],
-  ['评价', '学生', '排课', '0..*', '0..*', { name: 1, mult: 1, pa: [25, -21], pb: [25, 28] }],
+  ['面向', '排课', '行政班', '0..*', '0..*', { name: 1, mult: -1, multA: 1, pa: [-70, -28],
+    pb: [40, -21], via: [[290, 355], [200, 473]], nameSegment: 2 }],
+  ['选课', '学生', '排课', '0..*', '0..*', { name: -1, mult: 1, pa: [0, -21], pb: [0, 28] }],
+  ['评价', '学生', '授课关系', '0..*', '0..*', { name: 1, mult: 1, pa: [-36, -21], pb: [0, 21] }],
   ['安排', '排课', '考试', '1', '0..*', { name: -1, mult: 1, multB: -1, pa: [85, 18] }],
   ['参加', '学生', '考试', '1..*', '0..*', { name: 1, mult: 1, pa: [50, 0] }],
 ];
@@ -72,17 +75,23 @@ for (const [name, a, b, ma, mb, o] of RELATIONS) {
   // 没有指定接点的一端：从实体中心朝另一端的接点（或中心）方向求边框交点
   const pa = fixA || rectEdge(A, A, norm([(fixB || B)[0] - A[0], (fixB || B)[1] - A[1]]), size(a));
   const pb = fixB || rectEdge(B, B, norm([pa[0] - B[0], pa[1] - B[1]]), size(b));
-  const d = norm([pb[0] - pa[0], pb[1] - pa[1]]);
-  const n = [-d[1], d[0]]; // A→B 方向的左法线
-  lines += `<line x1="${pa[0].toFixed(1)}" y1="${pa[1].toFixed(1)}" x2="${pb[0].toFixed(1)}" y2="${pb[1].toFixed(1)}" stroke="${LINE}" stroke-width="1.5"/>`;
+  const points = [pa, ...(o.via ?? []), pb];
+  const directions = points.slice(1).map((p, i) => norm([p[0] - points[i][0], p[1] - points[i][1]]));
+  const normal = ([dx, dy], side) => [-dy * side, dx * side];
+  lines += `<polyline points="${points.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="${LINE}" stroke-width="1.5"/>`;
   // 联系名：连线中点，向一侧偏 12px
-  const mid = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
-  const sn = [n[0] * o.name, n[1] * o.name];
+  const segment = o.nameSegment ?? 0;
+  const mid = points[segment].map((v, i) => (v + points[segment + 1][i]) / 2);
+  const sn = normal(directions[segment], o.name);
   labels += text(mid[0] + sn[0] * 12, mid[1] + sn[1] * 12, name, sn, { size: 15, weight: 500 });
   // 多重性：距实体边 16px，向一侧偏 9px；multA / multB 可单独指定某一端放哪一侧
-  for (const [p, dir, m, side] of [[pa, d, ma, o.multA ?? o.mult], [pb, [-d[0], -d[1]], mb, o.multB ?? o.mult]]) {
-    const sm = [n[0] * side, n[1] * side];
-    labels += text(p[0] + dir[0] * 16 + sm[0] * 9, p[1] + dir[1] * 16 + sm[1] * 9, m, sm, { size: 13, color: ACCENT });
+  const first = directions[0], last = directions.at(-1);
+  const inset = o.multInset ?? 16;
+  for (const [p, dir, m, sm] of [
+    [pa, first, ma, normal(first, o.multA ?? o.mult)],
+    [pb, last.map(v => -v), mb, normal(last, o.multB ?? o.mult)],
+  ]) {
+    labels += text(p[0] + dir[0] * inset + sm[0] * 9, p[1] + dir[1] * inset + sm[1] * 9, m, sm, { size: 13, color: ACCENT });
   }
 }
 for (const [n, [x, y]] of Object.entries(ENTITIES)) {

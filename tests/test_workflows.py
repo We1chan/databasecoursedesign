@@ -437,6 +437,43 @@ class Workflows(unittest.TestCase):
         self.assertEqual([r["level_code"] for r in published_grades(self.cn, BOB, best=True)], ["GOOD"])
         self.assertEqual(program_credits(self.cn, BOB), (3, 8))
 
+    def test_grades_returned_after_deadline_can_be_resubmitted(self):
+        self.schedule(7, "R1", 6)
+        round_id = self.direct_round([7])
+        alice = self.choose(ALICE, round_id, 7)
+        sheet = open_grade_sheet(self.cn, ADMIN, 7, TERM, "REGULAR", GRADE_OPEN, GRADE_CLOSE)
+        configure_grades(self.cn, TEACHER, sheet, 1, {"平时": 30, "期末": 70}, GRADE_TIME)
+        save_grades(self.cn, TEACHER, sheet, [numeric(alice, 80, 90)], GRADE_TIME)
+        self.reject("GRADE_WINDOW_CLOSED", submit_grades, TEACHER, sheet, GRADE_CLOSE)
+        submit_grades(self.cn, TEACHER, sheet, GRADE_TIME)
+        review_sheet(self.cn, ADMIN, sheet, False, GRADE_CLOSE, "修正分项")
+        self.reject("FORBIDDEN", save_grades, OTHER_TEACHER, sheet,
+                    [numeric(alice, 90, 100)], GRADE_CLOSE)
+        save_grades(self.cn, TEACHER, sheet, [numeric(alice, 90, 100)], GRADE_CLOSE)
+        submit_grades(self.cn, TEACHER, sheet, GRADE_CLOSE)
+        review_sheet(self.cn, ADMIN, sheet, True, GRADE_CLOSE)
+        self.assertEqual(published_grades(self.cn, ALICE)[0]["total_score"], Decimal("97.00"))
+
+    def test_assessment_submits_after_a_graded_student_drops(self):
+        self.schedule(7, "R1", 6)
+        round_id = self.direct_round([7])
+        alice = self.choose(ALICE, round_id, 7)
+        bob = self.choose(BOB, round_id, 7)
+        sheet = open_grade_sheet(self.cn, ADMIN, 7, TERM, "REGULAR", GRADE_OPEN, GRADE_CLOSE)
+        configure_grades(self.cn, TEACHER, sheet, 1, {"平时": 30, "期末": 70}, GRADE_TIME)
+        obsolete = save_grades(self.cn, TEACHER, sheet, [numeric(bob, 70, 80)], GRADE_TIME)[bob]
+        adjust_selection(self.cn, ADMIN, round_id, student_no(BOB), 7, GRADE_TIME,
+                         drop=True, reason="考查课退选")
+        self.reject("GRADE_INCOMPLETE", submit_grades, TEACHER, sheet, GRADE_TIME)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM grade_item WHERE grade_id=%s", (obsolete,)), 2)
+        save_grades(self.cn, TEACHER, sheet, [numeric(alice, 80, 90)], GRADE_TIME)
+        submit_grades(self.cn, TEACHER, sheet, GRADE_TIME)
+        review_sheet(self.cn, ADMIN, sheet, True, GRADE_TIME)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM grade_item WHERE grade_id=%s", (obsolete,)), 0)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM grade WHERE grade_id=%s", (obsolete,)), 0)
+        self.assertEqual(published_grades(self.cn, ALICE)[0]["total_score"], Decimal("87.00"))
+        self.assertEqual(published_grades(self.cn, BOB), [])
+
     def test_p_evaluation_scope_boundaries_and_frozen_aggregate(self):
         """P01–P05 | 待评资格、防重复、时间窗、得分与教师汇总"""
         self.schedule(1, "R1", 1)
