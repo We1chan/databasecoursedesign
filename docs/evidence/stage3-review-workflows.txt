@@ -1,0 +1,42 @@
+第三阶段 PR #1 评审复跑 · 2026-11-24
+MySQL Community Server 8.0.45，Connector/Python 9.7.0，Python 3.11.9。
+使用仅绑定本机回环地址的独立测试实例。每项用例创建并清理自己的临时库。
+命令：python -B -m unittest discover -s tests -p "test_workflows.py" -v
+
+test_a_account_password_role_and_lock (test_workflows.Workflows.test_a_account_password_role_and_lock)
+C01/A01/A02 | 密码哈希、身份校验、角色授予撤回和锁定 ... ok
+test_assessment_submits_after_a_graded_student_drops (test_workflows.Workflows.test_assessment_submits_after_a_graded_student_drops) ... ok
+test_db_constraints_and_backend_prerequisites (test_workflows.Workflows.test_db_constraints_and_backend_prerequisites)
+DDL | CHECK、外键和唯一键拒绝非法写入 ... ok
+test_e_exam_publication_conflicts_and_deferral (test_workflows.Workflows.test_e_exam_publication_conflicts_and_deferral)
+E01–E06 | 多考场、占用/考生/监考冲突、本人查询和跨学期缓考 ... ok
+test_g_grades_visibility_correction_makeup_and_credits (test_workflows.Workflows.test_g_grades_visibility_correction_makeup_and_credits)
+G01–G06/G09–G10、K04/K05 | 批量回滚、发布可见、改分、补考与培养学分 ... ok
+test_grades_returned_after_deadline_can_be_resubmitted (test_workflows.Workflows.test_grades_returned_after_deadline_can_be_resubmitted) ... ok
+test_k_admin_adjustment_uses_capacity_and_audit (test_workflows.Workflows.test_k_admin_adjustment_uses_capacity_and_audit)
+K11 | 管理员手工补退沿用容量校验且审计可查 ... ok
+test_k_catalog_and_course_plan_replacement (test_workflows.Workflows.test_k_catalog_and_course_plan_replacement)
+K01–K03 | 小学期、课程主数据、培养方案及批量更新回滚 ... ok
+test_k_concurrent_last_seat (test_workflows.Workflows.test_k_concurrent_last_seat)
+K10a | 12 个独立连接争抢 1 个名额，失败请求无明细 ... ok
+test_k_concurrent_same_student (test_workflows.Workflows.test_k_concurrent_same_student)
+K10a | 同一学生两个冲突教学班的并发提交 ... ok
+test_k_create_offering_from_program_and_teacher_roster (test_workflows.Workflows.test_k_create_offering_from_program_and_teacher_roster)
+K03/K06/K07/K18 | 培养方案开班、主讲安排、课表和教师名单 ... ok
+test_k_direct_rules_drop_reselect_and_timetable (test_workflows.Workflows.test_k_direct_rules_drop_reselect_and_timetable)
+K09/K10/K12/K16 | 轮次准入、跨校区冲突、学分上限、退选与课表 ... ok
+test_k_lottery_pending_drop_order_and_replay (test_workflows.Workflows.test_k_lottery_pending_drop_order_and_replay)
+K10/K11 | 预选不占名额、退选、固定顺序、稳定封轮重试 ... ok
+test_k_scheduling_and_conflicts (test_workflows.Workflows.test_k_scheduling_and_conflicts)
+K06–K08a | 教室、教师、行政班、容量及周次边界 ... ok
+test_p_evaluation_scope_boundaries_and_frozen_aggregate (test_workflows.Workflows.test_p_evaluation_scope_boundaries_and_frozen_aggregate)
+P01–P05 | 待评资格、防重复、时间窗、得分与教师汇总 ... ok
+test_s_admission_replay_and_atomic_failure (test_workflows.Workflows.test_s_admission_replay_and_atomic_failure)
+S06 | 新生导入幂等、同批异内容冲突、外键错误整批回滚 ... ok
+test_s_profile_scope_staleness_and_history (test_workflows.Workflows.test_s_profile_scope_staleness_and_history)
+S01/S02/S05、A02 | 本人学籍、角色权限、过期原值拒绝和历史 ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 39.922s
+
+OK
