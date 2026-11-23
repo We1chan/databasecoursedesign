@@ -8,6 +8,7 @@ from secrets import token_urlsafe
 from threading import Lock
 from time import monotonic
 from typing import Annotated, Any
+from unicodedata import combining, normalize
 
 from fastapi import Depends, Request
 from fastapi.security import APIKeyCookie
@@ -118,17 +119,20 @@ def set_session_cookie(response, request, token):
 
 
 class LoginGate:
-    """Bounded per-client login admission for the single-process local server."""
+    """Bounded login admission per client and account name for the local server."""
 
     def __init__(self):
         self.lock = Lock()
         self.clients = OrderedDict()
 
-    def observe(self, client):
+    def observe(self, client, login):
+        # Match common case and accent equivalents of the MySQL login collation.
+        normalized = normalize("NFKD", login.casefold())
+        key = (client, "".join(char for char in normalized if not combining(char)))
         now = monotonic()
         with self.lock:
-            times = self.clients.setdefault(client, deque())
-            self.clients.move_to_end(client)
+            times = self.clients.setdefault(key, deque())
+            self.clients.move_to_end(key)
             if len(self.clients) > 4096:
                 self.clients.popitem(last=False)
             while times and times[0] <= now - 60:

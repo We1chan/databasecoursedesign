@@ -49,17 +49,19 @@ def update_catalog(cn, account, payload, now):
     require(len(current) <= 1, "INVALID_MULTIPLE_CURRENT_TERMS")
     with transaction(cn) as cur:
         permission(cur, account, "CATALOG")
-        if current:
-            cur.execute("UPDATE term SET is_current=FALSE WHERE current_guard=1 AND term_code<>%s",
-                        (current[0]["term_code"],))
         for key, table, identity in CATALOG:
             records = batches[key]
             if not records:
+                continue
+            if key == "terms":
+                save_terms(cur, payload.terms)
                 continue
             if key in {"teachers", "rooms"}:
                 records = [{**record, "source_system":"API", "synced_at":now} for record in records]
             if key == "period_times":
                 validate_periods(cur, records)
+            if key == "rooms":
+                validate_rooms(cur, records)
             columns = tuple(records[0])
             parameters = ",".join(["%s"] * len(columns))
             changes = ",".join(f"`{name}`=incoming.`{name}`" for name in columns if name not in identity)
@@ -70,6 +72,51 @@ def update_catalog(cn, account, payload, now):
                 [tuple(record[col] for col in columns) for record in records],
             )
         log(cur, account, "UPDATE_CATALOG", "CATALOG", "batch")
+
+
+def save_terms(cur, terms):
+    for term in terms:
+        old = one(cur, "SELECT starts_on,week_count FROM term WHERE term_code=%s FOR UPDATE",
+                  (term.term_code,))
+        if old and (old["starts_on"] != term.starts_on or old["week_count"] > term.week_count):
+            last_week = value(
+                cur,
+                """SELECT MAX(w.week_no) FROM section s JOIN schedule m ON m.section_id=s.section_id
+                   JOIN schedule_week w ON w.schedule_id=m.schedule_id
+                   WHERE s.term_code=%s AND m.active""",
+                (term.term_code,),
+            )
+            require(last_week is None or (old["starts_on"] == term.starts_on
+                                          and last_week <= term.week_count), "TERM_IN_USE")
+        cur.execute(
+            """INSERT INTO term (term_code,starts_on,week_count) VALUES (%s,%s,%s) AS incoming
+               ON DUPLICATE KEY UPDATE starts_on=incoming.starts_on,week_count=incoming.week_count""",
+            (term.term_code, term.starts_on, term.week_count),
+        )
+
+    for term in terms:
+        if "is_current" not in term.model_fields_set:
+            continue
+        if term.is_current:
+            cur.execute("UPDATE term SET is_current=FALSE WHERE current_guard=1 AND term_code<>%s",
+                        (term.term_code,))
+        cur.execute("UPDATE term SET is_current=%s WHERE term_code=%s", (term.is_current, term.term_code))
+
+
+def validate_rooms(cur, records):
+    for record in records:
+        old = one(cur, """SELECT campus_code,seat_count,is_active FROM classroom
+                          WHERE room_code=%s FOR UPDATE""", (record["room_code"],))
+        if not old:
+            continue
+        moved = old["campus_code"] != record["campus_code"]
+        deactivated = old["is_active"] and not record["is_active"]
+        if moved or deactivated or record["seat_count"] < old["seat_count"]:
+            capacity = value(cur, """SELECT MAX(s.capacity) FROM schedule m
+                                     JOIN section s ON s.section_id=m.section_id
+                                     WHERE m.room_code=%s AND m.active""", (record["room_code"],))
+            require(capacity is None or (not moved and not deactivated
+                                         and record["seat_count"] >= capacity), "ROOM_IN_USE")
 
 
 def validate_periods(cur, records):
@@ -202,6 +249,27 @@ def request_row(cur, request_id, *, lock=False):
     return row
 
 
+def reviewable_request_types(cur, account):
+    granted = {record["permission_code"] for record in rows(
+        cur,
+        """SELECT DISTINCT rp.permission_code FROM user_account a
+           JOIN user_role ur ON ur.account_id=a.account_id
+           JOIN role_permission rp ON rp.role_code=ur.role_code
+           WHERE a.account_id=%s AND a.account_state='ACTIVE'""",
+        (account,),
+    )}
+    kinds = [kind for kind, code in REQUEST_PERMISSIONS.items() if code in granted]
+    require(kinds, "FORBIDDEN")
+    return kinds
+
+
+def reviewable_request(cur, account, request_id):
+    kinds = reviewable_request_types(cur, account)
+    request = request_row(cur, request_id)
+    require(request["request_type"] in kinds, "FORBIDDEN")
+    return request
+
+
 def apply_profile(cur, request, key):
     cipher = cipher_for(key)
     student_no = value(cur, "SELECT student_no FROM user_account WHERE account_id=%s",
@@ -223,8 +291,7 @@ def apply_profile(cur, request, key):
 
 def request_detail(cn, account, request_id, key):
     with cn.cursor(dictionary=True, buffered=True) as cur:
-        permission(cur, account, "PROFILE_REVIEW")
-        request = request_row(cur, request_id)
+        request = reviewable_request(cur, account, request_id)
         kind = request["request_type"]
         if kind == "INFO_CHANGE":
             cipher = cipher_for(key)
@@ -242,8 +309,6 @@ def request_detail(cn, account, request_id, key):
                                   FROM correction_req WHERE request_id=%s""", (request_id,))
             request["details"] = {**details, "old_snapshot":json.loads(details["old_snapshot"]),
                                   "proposed_snapshot":json.loads(details["proposed_snapshot"])} if details else {}
-        else:
-            request["details"] = {}
         request["history"] = rows(cur, """SELECT actor_id,action_type,opinion,acted_at FROM approval_log
                                          WHERE request_id=%s ORDER BY approval_id""", (request_id,))
         return request
@@ -251,9 +316,7 @@ def request_detail(cn, account, request_id, key):
 
 def decide_request(cn, account, request_id, decision, opinion, key, now):
     with cn.cursor(dictionary=True, buffered=True) as cur:
-        permission(cur, account, "PROFILE_REVIEW")
-        kind = request_row(cur, request_id)["request_type"]
-        require(kind in REQUEST_PERMISSIONS, "INVALID_REQUEST_KIND")
+        kind = reviewable_request(cur, account, request_id)["request_type"]
     if decision == "APPROVE" and kind == "DEFERRAL":
         return exams.approve_deferral(cn, account, request_id, now, opinion)
     if decision == "APPROVE" and kind == "GRADE_CORRECTION":

@@ -7,6 +7,9 @@ from secrets import token_bytes
 from .database import log, one, permission, require, transaction
 
 
+DUMMY_PASSWORD_RECORD = "scrypt$" + "00" * 16 + "$" + "00" * 64
+
+
 def digest(password, salt):
     return scrypt(password.encode("utf8"), salt=salt, n=2**15, r=8, p=1, maxmem=64 * 1024**2)
 
@@ -85,8 +88,9 @@ def verify_login(cur, login, password, now):
         """SELECT account_id,password_hash,account_state FROM user_account
            WHERE login_name=%s FOR UPDATE""", (login,),
     )
-    require(account and account["account_state"] == "ACTIVE"
-            and matches(password, account["password_hash"]), "INVALID_CREDENTIALS")
+    active = account is not None and account["account_state"] == "ACTIVE"
+    password_matches = matches(password, account["password_hash"] if active else DUMMY_PASSWORD_RECORD)
+    require(active and password_matches, "INVALID_CREDENTIALS")
     cur.execute("UPDATE user_account SET last_login_at=%s WHERE account_id=%s",
                 (now, account["account_id"]))
     return account["account_id"]

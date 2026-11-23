@@ -1,6 +1,6 @@
 # 教务系统后端
 
-后端使用 FastAPI、Python 3.11+ 和 MySQL 8.0.19+。前端对接以 [HTTP 接口规范](../docs/05-HTTP接口规范.md)及 [OpenAPI 快照](../docs/05-openapi.json)为准。核心业务与课程阶段的 MySQL 事务回归使用同一组实现。
+后端用于可选的本地演示和前端联调。课程必交材料见[验收说明](../docs/04-验收说明与演示手册.md#4-交付材料索引)。演示使用 FastAPI、Python 3.11+ 和 MySQL 8.0.19+，复用课程阶段的 MySQL 事务实现。前端对接以运行时 OpenAPI 和 [HTTP 接口规范](../docs/05-HTTP接口规范.md)为准。
 
 ## 本地运行
 
@@ -38,7 +38,7 @@ $env:COURSE_FRONTEND_ORIGINS = 'http://127.0.0.1:5173'
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-本地健康检查位于 `http://127.0.0.1:8000/api/v1/health`。Swagger 位于 `/docs`。供前端生成类型的接口描述可从 `/openapi.json` 下载。更新快照运行 `python -m backend.openapi`。
+本地健康检查位于 `http://127.0.0.1:8000/api/v1/health`。Swagger 位于 `/docs`。供前端生成类型的接口描述可从 `/openapi.json` 下载。如需离线副本，在仓库根目录运行 `python -m backend.openapi`，生成 `docs/05-openapi.json`。
 
 本地使用 HTTP 时仅关闭本地 Cookie 的 Secure 属性。HTTPS 部署保留默认 Secure 属性，前端允许来源按部署地址配置。会话 Cookie 为 HttpOnly、SameSite=Strict，前端通过 `credentials: "include"` 携带。写请求使用登录或 `/auth/me` 返回的 CSRF 值。
 

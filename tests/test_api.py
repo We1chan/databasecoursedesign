@@ -2,12 +2,15 @@
 
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from database import connect, sandbox
+from backend import accounts
 from backend.bootstrap import install_schema, provision_admin
+from backend.errors import Fault
 from backend.main import create_app
 from backend.settings import Settings
 
@@ -100,6 +103,175 @@ class Api(unittest.TestCase):
         teacher = self.client()
         self.login(teacher, login, TEACHER_PASSWORD)
         return teacher
+
+    def test_login_preserves_password_spaces_and_isolates_shared_ips(self):
+        initial = "  test-spaced-password  "
+        changed = "  test-changed-password  "
+        with connect(self.database) as cn:
+            provision_admin(cn, "spaced", initial)
+        client = self.client()
+        self.login(client, " spaced ", initial)
+        self.call(client, "PATCH", "/auth/password", {"old_password": initial, "new_password": changed})
+        self.login(client, "spaced", changed)
+        self.call(client, "POST", "/auth/login", {"login_name": "spaced", "password": changed.strip()},
+                  status=401)
+
+        with patch.object(accounts, "matches", wraps=accounts.matches) as verify:
+            error = self.call(client, "POST", "/auth/login",
+                              {"login_name": "unregistered", "password": changed}, status=401)
+            self.assertEqual(error["code"], "INVALID_CREDENTIALS")
+            verify.assert_called_once_with(changed, accounts.DUMMY_PASSWORD_RECORD)
+
+        gate = self.app.state.login_gate
+        for _ in range(20):
+            gate.observe("shared-ip", "SampleUser")
+        gate.observe("shared-ip", "another-user")
+        with self.assertRaisesRegex(Fault, "LOGIN_RATE_LIMITED"):
+            gate.observe("shared-ip", "sampleuser")
+
+    def test_catalog_protects_existing_meetings_and_keeps_current_term(self):
+        data = self.add_test_catalog()
+        self.call(self.admin, "POST", "/admin/catalog", {
+            "campuses": [{"campus_code": "S", "campus_name": "另一个校区"}],
+        })
+        self.call(self.admin, "PUT", "/admin/programs", {
+            "major_code": "CS01", "entry_year": 2026, "required_credits": "3.00",
+            "courses": [{"course_code": "DB", "curriculum_group": "核心",
+                         "course_attribute": "REQUIRED", "suggested_term": 1}],
+        })
+        section = self.call(self.admin, "POST", "/admin/sections", {
+            "term_code": TERM, "class_no": "2026010001", "planned_term": 1, "course_code": "DB",
+            "section_no": "01", "offering_no": "DB-01", "campus_code": "N", "capacity": 15,
+            "teacher_no": "T01",
+        }, status=201)["section_id"]
+        self.call(self.admin, "POST", f"/admin/sections/{section}/meetings", {
+            "room_code": "R1", "day_of_week": 1, "first_period": 1, "last_period": 1, "weeks": [1, 4],
+        }, status=201)
+
+        term = {"term_code": TERM, "starts_on": "2026-11-23", "week_count": 4}
+        room = data["rooms"][0]
+        for update, code in (
+            ({"rooms": [{**room, "campus_code": "S"}]}, "ROOM_IN_USE"),
+            ({"rooms": [{**room, "seat_count": 14}]}, "ROOM_IN_USE"),
+            ({"rooms": [{**room, "is_active": False}]}, "ROOM_IN_USE"),
+            ({"terms": [{**term, "week_count": 3}]}, "TERM_IN_USE"),
+            ({"terms": [{**term, "starts_on": "2026-11-24"}]}, "TERM_IN_USE"),
+        ):
+            with self.subTest(update=update):
+                error = self.call(self.admin, "POST", "/admin/catalog", update, status=409)
+                self.assertEqual(error["code"], code)
+        self.call(self.admin, "POST", "/admin/catalog", {"terms": [term], "rooms": [{**room, "seat_count": 15}]})
+        self.assertEqual(self.call(self.admin, "GET", "/catalog/terms"), [{**term, "is_current": True}])
+        second = {**term, "term_code": "2026-2027-2", "is_current": True}
+        self.call(self.admin, "POST", "/admin/catalog", {"terms": [second]})
+        self.assertEqual({item["term_code"]: item["is_current"]
+                          for item in self.call(self.admin, "GET", "/catalog/terms")},
+                         {TERM: False, "2026-2027-2": True})
+
+    def test_catalog_reads_legacy_data_and_searches_literal_symbols(self):
+        self.add_test_catalog()
+        code = "中!_%\\"
+        with connect(self.database) as cn, cn.cursor() as cur:
+            cur.execute("""INSERT INTO course
+                (course_code,course_name,department_code,credits,assessment,course_nature)
+                VALUES (%s,'旧数据','CS',0,'ASSESSMENT','')""", (code,))
+            cur.execute("INSERT INTO program (major_code,entry_year,required_credits) VALUES ('CS01',2026,3)")
+        catalog = self.call(self.admin, "GET", "/admin/catalog/courses")["items"]
+        self.assertEqual({row["course_code"] for row in catalog}, {"DB", code})
+        for search in ("!", "_", "%", "\\"):
+            response = self.admin.get(BASE + "/catalog/courses", params={"search": search})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([item["course_code"] for item in response.json()["data"]["items"]], [code])
+        plan = self.call(self.admin, "GET", "/admin/programs?major_code=CS01&entry_year=2026")
+        self.assertEqual(plan["courses"], [])
+
+    def test_request_review_is_scoped_to_the_granted_kind(self):
+        with connect(self.database) as cn, cn.cursor() as cur:
+            reviewer_id = provision_admin(cn, "deferral-reviewer", ADMIN_PASSWORD)
+            cur.execute("INSERT INTO role VALUES ('deferral-reviewer','缓考审核')")
+            cur.execute("INSERT INTO role_permission VALUES ('deferral-reviewer','DEFERRAL_REVIEW')")
+            cur.execute("UPDATE user_role SET role_code='deferral-reviewer' WHERE account_id=%s",
+                        (reviewer_id,))
+            cur.execute("INSERT INTO request (applicant_id,request_type,reason) VALUES (%s,'INFO_CHANGE','样例')",
+                        (reviewer_id,))
+            profile = cur.lastrowid
+            cur.execute("INSERT INTO request (applicant_id,request_type,reason) VALUES (%s,'DEFERRAL','样例')",
+                        (reviewer_id,))
+            deferral = cur.lastrowid
+        reviewer = self.client()
+        self.login(reviewer, "deferral-reviewer", ADMIN_PASSWORD)
+        queue = self.call(reviewer, "GET", "/admin/requests")
+        self.assertEqual([item["request_id"] for item in queue["items"]], [deferral])
+        self.call(reviewer, "GET", "/admin/requests?kind=INFO_CHANGE", status=403)
+        self.call(reviewer, "GET", f"/admin/requests/{profile}", status=403)
+        self.call(reviewer, "POST", f"/admin/requests/{profile}/decision", {"decision": "REJECT"}, status=403)
+        self.assertEqual(self.call(reviewer, "GET", f"/admin/requests/{deferral}")["request_type"], "DEFERRAL")
+        self.assertTrue(self.call(reviewer, "POST", f"/admin/requests/{deferral}/decision",
+                                  {"decision": "REJECT"})["applied"])
+
+    def test_assessment_grade_window_precision_and_late_return(self):
+        catalog = self.add_test_catalog()
+        self.call(self.admin, "POST", "/admin/catalog", {
+            "courses": [{**catalog["courses"][0], "assessment": "ASSESSMENT"}],
+        })
+        alice, bob = self.add_students()
+        teacher = self.add_teacher("teacher", "T01")
+        self.call(self.admin, "PUT", "/admin/programs", {
+            "major_code": "CS01", "entry_year": 2026, "required_credits": "3.00",
+            "courses": [{"course_code": "DB", "curriculum_group": "核心",
+                         "course_attribute": "REQUIRED", "suggested_term": 1}],
+        })
+        first, second = [self.call(self.admin, "POST", "/admin/sections", {
+            "term_code": TERM, "class_no": "2026010001", "planned_term": 1, "course_code": "DB",
+            "section_no": number, "offering_no": f"DB-{number}", "campus_code": "N", "capacity": 10,
+            "teacher_no": "T01",
+        }, status=201)["section_id"] for number in ("01", "02")]
+        self.call(self.admin, "POST", f"/admin/sections/{first}/meetings", {
+            "room_code": "R1", "day_of_week": 1, "first_period": 1, "last_period": 1, "weeks": [1],
+        }, status=201)
+        exam_error = self.call(self.admin, "POST", "/admin/exams", {
+            "section_id": first, "term_code": TERM, "period": "FINAL", "kind": "REGULAR",
+            "starts_at": "2026-11-23T02:00:00Z", "ends_at": "2026-11-23T03:00:00Z",
+            "rooms": ["R1"], "invigilators": {"R1": "T01"}, "method": "机考",
+        }, status=409)
+        self.assertEqual(exam_error["code"], "NO_EXAM_REQUIRED")
+        round_id = self.call(self.admin, "POST", "/admin/selection-rounds", {
+            "term_code": TERM, "round_name": "正选", "mode": "DIRECT",
+            "starts_at": "2026-11-23T00:30:00Z", "ends_at": "2026-11-23T01:15:00Z",
+            "sections": [first],
+        }, status=201)["round_id"]
+        selection_path = f"/selection/rounds/{round_id}/sections/{first}/enrollment"
+        enrolled = [self.call(student, "PUT", selection_path, {"action": "SELECT"})["enrollment_id"]
+                    for student in (alice, bob)]
+        window = {"term_code": TERM, "kind": "REGULAR", "opens_at": "2026-11-23T01:00:00.123456Z",
+                  "closes_at": "2026-11-23T01:30:00.234567Z"}
+        primary, _ = [self.call(self.admin, "POST", "/admin/grade-sheets",
+                                {**window, "section_id": section}, status=201)["sheet_id"]
+                      for section in (first, second)]
+        scale = self.call(self.admin, "POST", "/admin/grade-scales", {
+            "scale_code": "PERCENT", "version_no": 1, "scale_name": "百分制", "value_kind": "NUMERIC",
+            "rules": [{"min_score": 0, "max_score": 100, "gpa": 4, "passed": True}],
+        }, status=201)["scale_id"]
+        path = f"/teacher/grade-sheets/{primary}"
+        self.now = datetime(2026, 11, 23, 1, 5)
+        self.call(teacher, "PUT", path + "/components", {"scale_id": scale, "weights": {"期末": "100"}})
+        self.call(teacher, "PUT", path + "/entries", {"entries": [
+            {"enrollment_id": enrollment, "scores": {"期末": "87"}} for enrollment in enrolled
+        ]})
+        self.call(bob, "PUT", selection_path, {"action": "DROP"})
+        self.assertEqual([row["enrollment_id"] for row in self.call(teacher, "GET", path)["entries"]],
+                         enrolled[:1])
+        self.call(teacher, "POST", path + "/submit")
+        self.now = datetime(2026, 11, 23, 1, 31)
+        review_path = f"/admin/grade-sheets/{primary}/review"
+        self.call(self.admin, "POST", review_path, {"decision": "RETURN", "opinion": "复核"})
+        self.call(teacher, "PUT", path + "/entries", {"entries": [
+            {"enrollment_id": enrolled[0], "scores": {"期末": "97"}},
+        ]})
+        self.call(teacher, "POST", path + "/submit")
+        self.call(self.admin, "POST", review_path, {"decision": "PUBLISH"})
+        self.assertEqual(self.call(alice, "GET", "/me/grades")[0]["total_score"], "97.00")
+        self.assertEqual(self.call(bob, "GET", "/me/grades"), [])
 
     def test_frontend_contract_and_session_controls(self):
         doc = self.admin.get("/openapi.json").json()

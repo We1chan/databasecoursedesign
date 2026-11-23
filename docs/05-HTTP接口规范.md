@@ -9,7 +9,8 @@
 - 成功响应形如 `{"data":{"section_id":17}}` 或 `{"data":[...]}`。搜索分页响应在 `data` 中返回 `items`、`limit`、`offset`，待办使用 `limit` 和两个游标字段 `after_requested_at`、`after_request_id` 按固定顺序翻页。时间戳相同按主键排序。
 - 登录成功写入 `course_session` HttpOnly Cookie，默认 Secure，SameSite=Strict，有效期 8 小时。会话标识在数据库中以摘要保存。登录和 `GET /auth/me` 都返回 `csrf_token`。已登录的写请求在 `X-CSRF-Token` 中携带该值。退出、改密和锁定后被撤销的会话返回 401。
 - 登录返回角色列表，前端可据此显示菜单。资源访问权限和本人、本班数据范围仍由服务端执行。写接口只从 Cookie 确认执行人，管理员为他人办理时才传入业务对象的 ID。
-- `GET /openapi.json` 是可机器读取的 OpenAPI。静态快照保存在 [05-openapi.json](05-openapi.json)。`GET /docs` 提供交互式调试。开发环境前端可通过配置交换 Cookie，示例见[前端联调](#4-前端联调)。
+- `GET /openapi.json` 提供可机器读取的接口描述，`GET /docs` 提供交互式调试。在仓库根目录运行 `python -m backend.openapi` 可生成本地离线副本。开发环境前端可通过配置交换 Cookie，示例见[前端联调](#4-前端联调)。
+- 密码首尾空格参与校验。登录限流按客户端地址和登录名组合计数，命中后参考 `Retry-After`。带时区的业务时间转为 UTC，统一截断到毫秒。
 
 ## 2. 接口清单
 
@@ -32,6 +33,8 @@
 | GET / PUT | `/admin/programs` | 管理员 | 按专业、年级查询，或提交总学分和课程列表 |
 | GET | `/me/program` | 学生 | 本人培养方案、计划课程和已修学分 |
 
+课程关键词执行字面包含搜索。更新学期时省略 `is_current` 会保留已有标志。已有上课安排时，改动其教室校区、停用教室、将座位数降低到排课容量以下、移动开学日或把周数缩短到已排周次以下会返回 409。
+
 **学籍和申请**
 
 | 方法 | 路径 | 权限 | 主要输入 / 输出 |
@@ -41,9 +44,11 @@
 | GET | `/me/profile` | 学生 | 本人学籍卡片、联系方式和学籍异动摘要 |
 | POST | `/me/profile-requests` | 学生 | `changes` 支持电话、邮箱、地址、姓名拼音，生成待审申请 |
 | GET | `/me/requests` | 登录 | 本人申请及状态，支持 `limit,offset` |
-| GET | `/admin/requests` | 管理员 | 申请状态、可选类型和游标，输出可审核的申请摘要 |
-| GET | `/admin/requests/{request_id}` | 管理员 | 单条申请、申请类型对应的审核信息及历史 |
-| POST | `/admin/requests/{request_id}/decision` | 管理员 | `decision` 为 `APPROVE/REJECT`。支持资料变更、缓考、成绩更正 |
+| GET | `/admin/requests` | 对应类型的审核权限 | 申请状态、可选类型和游标，按已授权的类型分页 |
+| GET | `/admin/requests/{request_id}` | 对应类型的审核权限 | 单条申请、申请类型对应的审核信息及历史 |
+| POST | `/admin/requests/{request_id}/decision` | 对应类型的审核权限 | `decision` 为 `APPROVE/REJECT`。支持资料变更、缓考、成绩更正 |
+
+资料变更、缓考和成绩更正分别需要 `PROFILE_REVIEW`、`DEFERRAL_REVIEW` 和 `CORRECTION_REVIEW`。
 
 **课程、排课和选课**
 
@@ -90,6 +95,8 @@
 | GET | `/teacher/evaluation-results` | 教师 | `batch_id` → 本人已汇总结果 |
 | GET | `/admin/evaluation-results` | 管理员 | `batch_id` → 已汇总结果与参与人数 |
 
+管理员退回登记单后，任课教师可以在原录入截止时间之后补正并重提。考查课按提交时的有效选课名单检查完整性，并在提交事务内清理退选学生的草稿成绩。
+
 CSV/Excel 文件页面可按上述批量接口提交解析后的数据。毕设、教室外部同步系统、重修缴费、调停课审批及家庭成员维护属于后续接口。v1 使用现有表定义实现表内业务，证明材料只接收引用 ID。
 
 ## 3. 错误和重试
@@ -102,7 +109,7 @@ CSV/Excel 文件页面可按上述批量接口提交解析后的数据。毕设�
 | 401 | `UNAUTHENTICATED`、`INVALID_CREDENTIALS` | 清理本地界面状态并重新登录 |
 | 403 | `FORBIDDEN`、`INVALID_CSRF`、`ORIGIN_DENIED` | 核对角色、资源归属及请求来源 |
 | 404 | `NOT_FOUND`、`NO_SECTION`、`NO_GRADE_SHEET` | 刷新所在列表 |
-| 409 | `FULL`、`DUPLICATE_COURSE`、`TIMETABLE_CONFLICT`、`ROUND_CLOSED`、`STALE_GRADE_VERSION`、`DUPLICATE_RECORD` | 显示原因，必要时重新读取状态 |
+| 409 | `FULL`、`DUPLICATE_COURSE`、`TIMETABLE_CONFLICT`、`ROUND_CLOSED`、`STALE_GRADE_VERSION`、`DUPLICATE_RECORD`、`ROOM_IN_USE`、`TERM_IN_USE`、`PERIOD_IN_USE`、`NO_EXAM_REQUIRED`、`NO_EXAM_CANDIDATES`、`NO_INSTRUCTOR` | 显示原因，必要时重新读取状态 |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | 登录请求需使用 `application/json` |
 | 422 | `VALIDATION_ERROR`、`REFERENCE_INVALID`、`CONSTRAINT_VIOLATION` | 标记相关字段供用户修改 |
 | 429 | `LOGIN_RATE_LIMITED` | 按 `Retry-After` 等待 |

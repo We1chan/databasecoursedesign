@@ -4,11 +4,12 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 
 
 def utc_naive(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    utc = value.astimezone(timezone.utc)
+    return utc.replace(tzinfo=None, microsecond=utc.microsecond // 1000 * 1000)
 
 
 Id = Annotated[int, Field(gt=0, le=9223372036854775807)]
@@ -76,12 +77,16 @@ class Health(BaseModel):
     status: Literal["ok"]
 
 
-class Login(Input):
-    login_name: Annotated[str, Field(min_length=1, max_length=64)]
+class CredentialsInput(Input):
+    model_config = ConfigDict(str_strip_whitespace=False)
+
+
+class Login(CredentialsInput):
+    login_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
     password: Password
 
 
-class ChangePassword(Input):
+class ChangePassword(CredentialsInput):
     old_password: Password
     new_password: NewPassword
 
@@ -89,8 +94,8 @@ class ChangePassword(Input):
 class AccountCreate(Login):
     password: NewPassword
     role: Role
-    student_no: StudentNo | None = None
-    teacher_no: Code | None = None
+    student_no: Annotated[StudentNo, StringConstraints(strip_whitespace=True)] | None = None
+    teacher_no: Annotated[Code, StringConstraints(strip_whitespace=True)] | None = None
 
 
 class AccountState(Input):
@@ -197,6 +202,77 @@ class Catalog(Input):
     courses: list[Course] = Field(default_factory=list, max_length=500)
 
 
+class DepartmentView(BaseModel):
+    department_code: str
+    department_name: str
+
+
+class MajorView(BaseModel):
+    major_code: str
+    major_name: str
+    department_code: str
+    study_years: int
+
+
+class AdministrativeClassView(BaseModel):
+    class_no: str
+    major_code: str
+    entry_year: int
+    class_name: str
+
+
+class TermView(BaseModel):
+    term_code: str
+    starts_on: date
+    week_count: int
+    is_current: bool
+
+
+class CampusView(BaseModel):
+    campus_code: str
+    campus_name: str
+
+
+class PeriodTimeView(BaseModel):
+    campus_code: str
+    period_no: int
+    starts_at: time
+    ends_at: time
+
+
+class TeacherView(BaseModel):
+    teacher_no: str
+    teacher_name: str
+    department_code: str
+    job_title: str | None
+    is_active: bool
+
+
+class RoomView(BaseModel):
+    room_code: str
+    campus_code: str
+    building: str
+    room_name: str
+    seat_count: int
+    exam_capacity: int
+    is_active: bool
+
+
+class CourseView(BaseModel):
+    course_code: str
+    course_name: str
+    department_code: str
+    credits: Decimal
+    lecture_hours: int
+    practice_hours: int
+    seminar_hours: int
+    lab_hours: int
+    outside_hours: int
+    assessment: str
+    course_nature: str
+    is_active: bool
+
+
 class ProgramCourse(Input):
     course_code: Code
     curriculum_group: Text40
@@ -215,7 +291,14 @@ class ProgramId(BaseModel):
     program_id: int
 
 
-class ProgramItem(ProgramCourse):
+class ProgramCourseView(BaseModel):
+    course_code: str
+    curriculum_group: str
+    course_attribute: str
+    suggested_term: int
+
+
+class ProgramItem(ProgramCourseView):
     course_name: str
     credits: Decimal
     passed: bool
@@ -682,8 +765,12 @@ class StudentSummary(BaseModel):
     academic_state: str
 
 
-class AdminProgram(Program):
+class AdminProgram(BaseModel):
     program_id: int
+    major_code: str
+    entry_year: int
+    required_credits: Decimal
+    courses: list[ProgramCourseView]
 
 
 class ExamView(BaseModel):

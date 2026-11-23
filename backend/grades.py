@@ -71,7 +71,13 @@ def editable(cur, account, sheet_id, now):
     sheet = sheet_for_update(cur, sheet_id)
     teacher_scope(cur, account, "GRADE_WRITE", sheet["section_id"])
     require(sheet["state"] in {"EMPTY", "DRAFT"}, "GRADE_SHEET_LOCKED")
-    require(sheet["opens_at"] <= now < sheet["closes_at"], "GRADE_WINDOW_CLOSED")
+    if now >= sheet["closes_at"] and sheet["state"] == "DRAFT":
+        returned = value(cur, """SELECT 1 FROM grade_sheet_log WHERE sheet_id=%s
+                                 AND action_type='RETURN' AND acted_at<=%s LIMIT 1""", (sheet_id, now))
+    else:
+        returned = False
+    require(sheet["opens_at"] <= now and (now < sheet["closes_at"] or returned),
+            "GRADE_WINDOW_CLOSED")
     return sheet
 
 
@@ -196,10 +202,17 @@ def sheet_log(cur, sheet_id, account, action, now, opinion=None):
 
 def submit_grades(cn, account, sheet_id, now):
     with transaction(cn) as cur:
+        # Use the same section lock as add/drop so the assessment roster stays stable at submission.
+        one(cur, """SELECT s.section_id FROM grade_sheet g JOIN section s ON s.section_id=g.section_id
+                    WHERE g.sheet_id=%s AND g.exam_id IS NULL FOR SHARE OF s""", (sheet_id,))
         sheet = editable(cur, account, sheet_id, now)
         roster = grade_roster(cur, sheet)
-        registered = rows(cur, """SELECT enrollment_id,total_score,level_code,grade_flag,rule_id
+        registered = rows(cur, """SELECT grade_id,enrollment_id,total_score,level_code,grade_flag,rule_id
                                   FROM grade WHERE sheet_id=%s""", (sheet_id,))
+        obsolete = []
+        if sheet["exam_id"] is None:
+            obsolete = [(r["grade_id"],) for r in registered if r["enrollment_id"] not in roster]
+            registered = [r for r in registered if r["enrollment_id"] in roster]
         require(roster and {r["enrollment_id"] for r in registered} == roster.keys(),
                 "GRADE_INCOMPLETE")
         for grade in registered:
@@ -209,6 +222,9 @@ def submit_grades(cn, account, sheet_id, now):
                     "GRADE_INCOMPLETE")
             require((roster[grade["enrollment_id"]] == "DEFERRED") ==
                     (grade["grade_flag"] == "DEFERRED"), "GRADE_DEFERRAL_MISMATCH")
+        if obsolete:
+            cur.executemany("DELETE FROM grade_item WHERE grade_id=%s", obsolete)
+            cur.executemany("DELETE FROM grade WHERE grade_id=%s", obsolete)
         cur.execute("UPDATE grade_sheet SET state='SUBMITTED',submitted_at=%s WHERE sheet_id=%s",
                     (now, sheet_id))
         sheet_log(cur, sheet_id, account, "SUBMIT", now)

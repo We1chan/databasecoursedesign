@@ -25,12 +25,13 @@ Offset = Annotated[int, Query(ge=0, le=1000000)]
 Week = Annotated[int, Query(ge=1, le=30)]
 CatalogKind = Literal["departments", "majors", "classes", "terms", "campuses",
                       "period_times", "teachers", "rooms", "courses"]
-CatalogItem = (m.Department | m.Major | m.AdministrativeClass | m.Term | m.Campus
-               | m.PeriodTime | m.Teacher | m.Room | m.Course)
-CATALOG_OUTPUT = dict(zip(
-    ("departments","majors","classes","terms","campuses","period_times","teachers","rooms","courses"),
-    (m.Department,m.Major,m.AdministrativeClass,m.Term,m.Campus,m.PeriodTime,m.Teacher,m.Room,m.Course),
-))
+CatalogItem = (m.DepartmentView | m.MajorView | m.AdministrativeClassView | m.TermView | m.CampusView
+               | m.PeriodTimeView | m.TeacherView | m.RoomView | m.CourseView)
+CATALOG_OUTPUT = {
+    "departments": m.DepartmentView, "majors": m.MajorView, "classes": m.AdministrativeClassView,
+    "terms": m.TermView, "campuses": m.CampusView, "period_times": m.PeriodTimeView,
+    "teachers": m.TeacherView, "rooms": m.RoomView, "courses": m.CourseView,
+}
 
 
 def as_json(data):
@@ -77,7 +78,7 @@ def health(cn: Connection):
 
 @router.post("/auth/login", response_model=m.Envelope[m.Session], tags=["会话"])
 def login(data: m.Login, request: Request, response: Response, cn: Connection):
-    request.app.state.login_gate.observe(request.client.host if request.client else "unknown")
+    request.app.state.login_gate.observe(request.client.host if request.client else "unknown", data.login_name)
     token, actor = start_session(cn, data.login_name, data.password.get_secret_value(), clock(request))
     set_session_cookie(response, request, token)
     return result(actor)
@@ -142,20 +143,20 @@ def change_role(account_id: PathId, role: m.Role, data: m.ToggleRole, cn: Connec
     return done()
 
 
-@router.get("/catalog/terms", response_model=m.Envelope[list[m.Term]], tags=["基础数据"])
+@router.get("/catalog/terms", response_model=m.Envelope[list[m.TermView]], tags=["基础数据"])
 def term_list(cn: Connection, actor: Actor):
     with cn.cursor(dictionary=True, buffered=True) as cur:
         return result(rows(cur, """SELECT term_code,starts_on,week_count,is_current FROM term
                                  ORDER BY starts_on DESC,term_code DESC"""))
 
 
-@router.get("/catalog/courses", response_model=m.Envelope[m.Page[m.Course]], tags=["基础数据"])
+@router.get("/catalog/courses", response_model=m.Envelope[m.Page[m.CourseView]], tags=["基础数据"])
 def course_list(cn: Connection, actor: Actor, search: Annotated[str, Query(max_length=100)] = "",
                 limit: Limit = 50, offset: Offset = 0):
-    key = "%" + search + "%"
+    key = "%" + search.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
     with cn.cursor(dictionary=True, buffered=True) as cur:
         items = rows(cur, """SELECT * FROM course WHERE is_active
-                             AND (course_code LIKE %s OR course_name LIKE %s)
+                             AND (course_code LIKE %s ESCAPE '!' OR course_name LIKE %s ESCAPE '!')
                              ORDER BY course_code LIMIT %s OFFSET %s""", (key, key, limit, offset))
     return page(items, limit, offset)
 

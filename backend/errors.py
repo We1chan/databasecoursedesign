@@ -30,6 +30,12 @@ MESSAGES = {
     "GRADE_INCOMPLETE": "尚有成绩未录入",
     "GRADE_SHEET_LOCKED": "当前登记单不可编辑",
     "GRADE_WINDOW_CLOSED": "当前不在成绩录入时间",
+    "ROOM_IN_USE": "已有上课安排使用该教室，当前修改会使安排失效",
+    "TERM_IN_USE": "已有上课安排超出新学期周数或依赖当前开学日",
+    "PERIOD_IN_USE": "已有上课安排使用该校区节次",
+    "NO_EXAM_REQUIRED": "考查课无需安排考试",
+    "NO_EXAM_CANDIDATES": "当前没有符合条件的考生",
+    "NO_INSTRUCTOR": "排课缺少启用的任课教师",
     "ROOM_CONFLICT": "教室在该时段已占用",
     "TEACHER_CONFLICT": "授课教师在该时段已占用",
     "CLASS_CONFLICT": "行政班在该时段已排课",
@@ -93,7 +99,7 @@ def install_handlers(app):
             status = 401
         elif code == "FORBIDDEN":
             status = 403
-        elif code.startswith("NO_"):
+        elif code.startswith("NO_") and code not in {"NO_EXAM_REQUIRED", "NO_EXAM_CANDIDATES", "NO_INSTRUCTOR"}:
             status = 404
         elif code.startswith("INVALID_") or code in INVALID:
             status = 422

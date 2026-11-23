@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from .database import log, one, permission, require, rows, transaction, value
 from . import grades
-from .people import CATALOG
+from .people import CATALOG, reviewable_request_types
 
 
 SECTION_FIELDS = """s.section_id,s.offering_no,s.section_no,s.course_code,c.course_name,s.term_code,
@@ -36,16 +36,17 @@ def requests_for(cn, account, limit, offset):
 
 
 def request_queue(cn, account, state, kind, cursor_time, cursor_id, limit):
-    condition = "state=%s"
-    args = [state]
-    if kind:
-        condition += " AND request_type=%s"
-        args.append(kind)
-    if cursor_time is not None:
-        condition += " AND (requested_at>%s OR (requested_at=%s AND request_id>%s))"
-        args.extend((cursor_time, cursor_time, cursor_id))
     with cn.cursor(dictionary=True, buffered=True) as cur:
-        permission(cur, account, "PROFILE_REVIEW")
+        kinds = reviewable_request_types(cur, account)
+        if kind is not None:
+            require(kind in kinds, "FORBIDDEN")
+            kinds = [kind]
+        placeholders = ",".join(["%s"] * len(kinds))
+        condition = f"state=%s AND request_type IN ({placeholders})"
+        args = [state, *kinds]
+        if cursor_time is not None:
+            condition += " AND (requested_at>%s OR (requested_at=%s AND request_id>%s))"
+            args.extend((cursor_time, cursor_time, cursor_id))
         items = rows(cur, f"""SELECT * FROM request WHERE {condition}
                             ORDER BY requested_at,request_id LIMIT %s""", (*args, limit+1))
     after = items[limit-1] if len(items) > limit else None

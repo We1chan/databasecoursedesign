@@ -199,7 +199,7 @@ def meeting(cur, section, schedule_term, room, day, periods, weeks):
            FROM classroom c
            JOIN period_time p ON p.campus_code=c.campus_code AND p.period_no=%s
            JOIN period_time q ON q.campus_code=c.campus_code AND q.period_no=%s
-           WHERE c.room_code=%s AND c.is_active AND c.campus_code=%s""",
+           WHERE c.room_code=%s AND c.is_active AND c.campus_code=%s FOR SHARE OF c, p, q""",
         (first, last, room, section["campus_code"]),
     )
     require(room_slot is not None, "ROOM_OR_PERIOD_UNAVAILABLE")
