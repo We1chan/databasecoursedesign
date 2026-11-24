@@ -1,0 +1,5 @@
+# 精简版是验收用的本地材料，不纳入版本库；开发一律以完整版为准
+*精简版*
+# 只有精简版用到的图
+docs/diagrams/seq-semester.png
+docs/diagrams/er-overview-v0.1.*
